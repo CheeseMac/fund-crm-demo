@@ -82,3 +82,8 @@ class HoldingIn(BaseModel):
     as_of: date
     tags: list[str] = Field(default_factory=list, max_length=20)
     note_md: str = Field(default="", max_length=5000)
+
+class PrefsIn(BaseModel):
+    lead_days: int | None = Field(default=None, ge=0, le=30)
+    timezone: str | None = Field(default=None, max_length=64)
+    channels: list[str] | None = Field(default=None, max_length=10)

@@ -231,3 +231,87 @@ class AuditLog(Base):
     resource_id: Mapped[str] = mapped_column(String(36), nullable=False)
     details_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserNotificationPrefs(Base):
+    """服务端持久化的提醒设置（docs/05 §4）：跨设备一致的 lead_days 等偏好。"""
+    __tablename__ = "user_notification_prefs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id"),
+        ForeignKeyConstraint(["tenant_id", "user_id"], ["users.tenant_id", "users.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
+    lead_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    channels: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    digest_mode: Mapped[str] = mapped_column(String(20), default="instant", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TaskSchedule(Base):
+    """持久化定时计划（docs/05 §4）：由内部 Scheduler 物化为 JobRun，不依赖用户登录。"""
+    __tablename__ = "task_schedules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "kind"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id"], ["users.tenant_id", "users.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)  # daily_reminder / weekly_report
+    hour: Mapped[int] = mapped_column(Integer, nullable=False)
+    minute: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    weekday: Mapped[int | None] = mapped_column(Integer)  # 0=Mon；None=每天
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    misfire_policy: Mapped[str] = mapped_column(String(20), default="run_once", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class JobRun(Base):
+    """单次作业：物化幂等（schedule+scheduled_for 唯一），领取带租约，可重试。"""
+    __tablename__ = "job_runs"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "scheduled_for"),
+        UniqueConstraint("idempotency_key"),
+        Index("ix_job_runs_claim", "status", "available_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    schedule_id: Mapped[str | None] = mapped_column(String(36))
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str | None] = mapped_column(String(36))
+    job_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    worker_id: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OutboxEvent(Base):
+    """事务性 Outbox（docs/05 §4）：业务写入与事件同事务；Worker 至少一次+幂等消费。"""
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key"),
+        Index("ix_outbox_pending", "delivery_status", "occurred_at"),
+    )
+    event_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(36))
+    event_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    idempotency_key: Mapped[str] = mapped_column(String(400), nullable=False)
+    delivery_status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

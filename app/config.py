@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://127.0.0.1:8001/v1"
     llm_api_key: str = ""
     llm_model: str = ""
+    # 内置维护循环（计划物化/作业执行/Outbox 派发）；生产可拆独立进程
+    scheduler_enabled: bool = True
+    scheduler_interval_seconds: int = 30
 
 settings = Settings()
 

@@ -13,15 +13,20 @@ from app.dependencies import Actor, get_actor, require_admin, get_customer, get_
 from app.models import (
     Tenant, User, Customer, Contact, Visit, Need, Holding, FollowUp,
     MarketSignal, Alert, AuditLog, uid, utcnow,
+    TaskSchedule, JobRun, OutboxEvent, UserNotificationPrefs,
 )
 from app.schemas import (
     TenantRegistration, LoginIn, UserIn, CustomerIn, ContactIn,
-    InterpretIn, MarketSignalIn, TaskIn, HoldingIn,
+    InterpretIn, MarketSignalIn, TaskIn, HoldingIn, PrefsIn,
 )
 from app.security import hash_password, verify_password, create_token
-from app.services.assistant import interpret, confirm, list_due
-from app.services.market import reconcile_market_signal, reconcile_due_tasks
-from app.services.parser import local_today
+from app.application import assistant as assistant_app
+from app.application import tasks as tasks_app
+from app.application import market as market_app
+from app.application import notifications as notifications_app
+from app.workers.scheduling import ensure_default_schedule, next_occurrence
+from app.services.market import reconcile_due_tasks
+from app.ai.text_rules import local_today
 from app.patch_schemas import CustomerPatch, NeedPatch
 
 router = APIRouter()
@@ -263,27 +268,17 @@ def export_customer_notes(customer_id: str, actor: Actor = Depends(get_actor),
 @router.post("/assistant/interpret")
 def assistant_interpret(payload: InterpretIn, actor: Actor = Depends(get_actor),
                         db: Session = Depends(get_db)):
-    return interpret(db, actor, payload.message)
+    return assistant_app.interpret(db, actor, payload.message)
 
 @router.post("/assistant/confirm/{pending_id}")
 def assistant_confirm(pending_id: str, actor: Actor = Depends(get_actor),
                       db: Session = Depends(get_db)):
-    return confirm(db, actor, pending_id)
+    return assistant_app.confirm_actions(db, actor, pending_id)
 
 @router.post("/tasks", status_code=201)
 def create_task(payload: TaskIn, actor: Actor = Depends(get_actor),
                 db: Session = Depends(get_db)):
-    get_customer(db, actor, payload.customer_id)
-    if payload.contact_id:
-        get_contact(db, actor, payload.customer_id, payload.contact_id)
-    task = FollowUp(tenant_id=actor.tenant_id, owner_user_id=actor.user_id,
-                    customer_id=payload.customer_id, contact_id=payload.contact_id,
-                    due_on=payload.due_on, cadence_days=payload.cadence_days,
-                    reason_md=payload.reason_md)
-    db.add(task)
-    db.flush()
-    audit(db, actor, "create", "followup", task.id, payload.reason_md)
-    db.commit()
+    task = tasks_app.create_task(db, actor, payload)
     return {"id": task.id, "due_on": task.due_on.isoformat()}
 
 @router.get("/tasks")
@@ -303,7 +298,7 @@ def list_tasks(status: str = "open", actor: Actor = Depends(get_actor),
 @router.get("/tasks/due")
 def due_tasks(until: __import__("datetime").date | None = None,
               actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
-    return list_due(db, actor, until)
+    return assistant_app.list_due(db, actor, until)
 
 @router.post("/tasks/{task_id}/complete")
 def complete_task(task_id: str, actor: Actor = Depends(get_actor),
@@ -334,31 +329,17 @@ def complete_task(task_id: str, actor: Actor = Depends(get_actor),
             "already_completed": False}
 
 @router.post("/reminders/reconcile")
-def reminder_reconcile(lead_days: int = 0, actor: Actor = Depends(get_actor),
+def reminder_reconcile(lead_days: int | None = None,
+                       actor: Actor = Depends(get_actor),
                        db: Session = Depends(get_db)):
-    until = local_today() + timedelta(days=lead_days) if lead_days > 0 else None
-    return {"alerts_created": reconcile_due_tasks(db, actor, until), "lead_days": lead_days}
+    # lead_days 缺省时使用服务端保存的用户偏好（跨设备一致）
+    return notifications_app.reconcile_for_user(db, actor, lead_days)
 
 @router.post("/market/signals", status_code=201)
 def publish_market_signal(payload: MarketSignalIn,
                           actor: Actor = Depends(require_admin),
                           db: Session = Depends(get_db)):
-    existing = db.scalar(select(MarketSignal).where(
-        MarketSignal.tenant_id == actor.tenant_id,
-        MarketSignal.external_key == payload.external_key,
-    ))
-    if existing:
-        raise HTTPException(409, "该外部事件标识已入库；可使用 reconcile 接口重试")
-    signal = MarketSignal(tenant_id=actor.tenant_id, **payload.model_dump())
-    db.add(signal)
-    db.flush()
-    audit(db, actor, "publish", "market_signal", signal.id, payload.headline)
-    db.commit()
-    # Post-commit reconciliation. If it fails, admin can retry the idempotent endpoint.
-    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False, autoflush=False)
-    created = reconcile_market_signal(factory, actor.tenant_id, signal.id, actor.user_id)
-    return {"id": signal.id, "alerts_created": created,
-            "notice": "人工事件匹配：仅用于内部复核，不是交易建议"}
+    return market_app.publish_signal(db, actor, payload)
 
 @router.post("/market/signals/{signal_id}/reconcile")
 def retry_market_reconcile(signal_id: str, actor: Actor = Depends(require_admin),
@@ -367,9 +348,7 @@ def retry_market_reconcile(signal_id: str, actor: Actor = Depends(require_admin)
         MarketSignal.id == signal_id, MarketSignal.tenant_id == actor.tenant_id))
     if not item:
         raise HTTPException(404, "事件不存在")
-    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False, autoflush=False)
-    created = reconcile_market_signal(factory, actor.tenant_id, signal_id, actor.user_id)
-    return {"alerts_created": created, "idempotent": True}
+    return market_app.match_signal(db, actor, signal_id)
 
 @router.get("/alerts")
 def list_alerts(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
@@ -394,3 +373,93 @@ def ack_alert(alert_id: str, actor: Actor = Depends(get_actor),
     audit(db, actor, "ack", "alert", alert.id, alert.dedup_key)
     db.commit()
     return {"status": alert.status}
+
+# ── V2：通知偏好 / 定时计划 / 作业与 Outbox（docs/05 §9.1）──
+
+@router.get("/api/v2/me/notification-preferences")
+def get_my_prefs(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    prefs = notifications_app.get_or_create_prefs(db, actor)
+    return {"lead_days": prefs.lead_days, "timezone": prefs.timezone,
+            "channels": prefs.channels, "digest_mode": prefs.digest_mode,
+            "updated_at": prefs.updated_at.isoformat() if prefs.updated_at else None}
+
+@router.put("/api/v2/me/notification-preferences")
+def put_my_prefs(payload: PrefsIn, actor: Actor = Depends(get_actor),
+                 db: Session = Depends(get_db)):
+    prefs = notifications_app.update_prefs(
+        db, actor, lead_days=payload.lead_days,
+        timezone_name=payload.timezone, channels=payload.channels)
+    audit(db, actor, "update", "notification_prefs", prefs.id, f"lead_days={prefs.lead_days}")
+    return {"lead_days": prefs.lead_days, "timezone": prefs.timezone,
+            "channels": prefs.channels, "digest_mode": prefs.digest_mode}
+
+@router.get("/api/v2/schedules")
+def my_schedules(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    ensure_default_schedule(db, actor.tenant_id, actor.user_id)  # 懒创建每日提醒计划
+    rows = db.scalars(select(TaskSchedule).where(
+        TaskSchedule.tenant_id == actor.tenant_id,
+        TaskSchedule.owner_user_id == actor.user_id,
+    ).order_by(TaskSchedule.next_run_at.asc())).all()
+    return [{"id": s.id, "kind": s.kind, "hour": s.hour, "minute": s.minute,
+             "weekday": s.weekday, "timezone": s.timezone, "enabled": s.enabled,
+             "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+             "misfire_policy": s.misfire_policy} for s in rows]
+
+@router.post("/api/v2/schedules/{schedule_id}/pause")
+def pause_schedule(schedule_id: str, actor: Actor = Depends(get_actor),
+                   db: Session = Depends(get_db)):
+    schedule = db.scalar(select(TaskSchedule).where(
+        TaskSchedule.id == schedule_id, TaskSchedule.tenant_id == actor.tenant_id,
+        TaskSchedule.owner_user_id == actor.user_id))
+    if not schedule:
+        raise HTTPException(404, "计划不存在")
+    schedule.enabled = False
+    audit(db, actor, "pause", "schedule", schedule.id, schedule.kind)
+    db.commit()
+    return {"id": schedule.id, "enabled": schedule.enabled}
+
+@router.post("/api/v2/schedules/{schedule_id}/resume")
+def resume_schedule(schedule_id: str, actor: Actor = Depends(get_actor),
+                    db: Session = Depends(get_db)):
+    schedule = db.scalar(select(TaskSchedule).where(
+        TaskSchedule.id == schedule_id, TaskSchedule.tenant_id == actor.tenant_id,
+        TaskSchedule.owner_user_id == actor.user_id))
+    if not schedule:
+        raise HTTPException(404, "计划不存在")
+    schedule.enabled = True
+    schedule.next_run_at = next_occurrence(
+        schedule.hour, schedule.minute, schedule.weekday, schedule.timezone, utcnow())
+    audit(db, actor, "resume", "schedule", schedule.id, schedule.kind)
+    db.commit()
+    return {"id": schedule.id, "enabled": schedule.enabled,
+            "next_run_at": schedule.next_run_at.isoformat()}
+
+@router.get("/api/v2/jobs/{job_id}")
+def job_status(job_id: str, actor: Actor = Depends(get_actor),
+               db: Session = Depends(get_db)):
+    job = db.scalar(select(JobRun).where(
+        JobRun.id == job_id, JobRun.tenant_id == actor.tenant_id))
+    if not job:
+        raise HTTPException(404, "作业不存在")
+    return {"id": job.id, "job_type": job.job_type, "status": job.status,
+            "attempts": job.attempts, "scheduled_for": job.scheduled_for.isoformat(),
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "last_error": job.last_error}
+
+@router.get("/api/v2/jobs")
+def recent_jobs(actor: Actor = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.scalars(select(JobRun).where(
+        JobRun.tenant_id == actor.tenant_id,
+    ).order_by(JobRun.created_at.desc()).limit(30)).all()
+    return [{"id": j.id, "job_type": j.job_type, "status": j.status,
+             "attempts": j.attempts, "scheduled_for": j.scheduled_for.isoformat(),
+             "last_error": j.last_error} for j in rows]
+
+@router.get("/api/v2/outbox")
+def recent_outbox(actor: Actor = Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.scalars(select(OutboxEvent).where(
+        OutboxEvent.tenant_id == actor.tenant_id,
+    ).order_by(OutboxEvent.occurred_at.desc()).limit(30)).all()
+    return [{"event_id": e.event_id, "event_type": e.event_type,
+             "delivery_status": e.delivery_status, "attempts": e.attempts,
+             "occurred_at": e.occurred_at.isoformat()} for e in rows]

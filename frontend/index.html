@@ -205,11 +205,17 @@
         </div>
         <div class="pane side">
           <div class="card">
-            <p class="section-title">提醒设置</p>
+            <p class="section-title">提醒设置（保存在服务器）</p>
             <label for="leadDays">到期提前提醒（天）</label>
             <input id="leadDays" type="number" min="0" max="30" value="0">
-            <p class="muted" style="margin:8px 0 10px">设为 N 后，点击「立即同步」会把未来 N 天内到期的待办也生成提醒；同一待办只提醒一次。</p>
-            <button class="btn secondary w100" id="syncReminders">立即同步</button>
+            <p class="muted" style="margin:8px 0 10px">设置保存在服务器、所有设备一致；系统每日 08:30 自动检查到期待办并生成提醒（同一待办只提醒一次）。</p>
+            <button class="btn secondary w100" id="savePrefs">保存设置</button>
+            <div id="scheduleInfo" class="muted" style="margin-top:12px"></div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="btn small ghost" id="pauseSchedule" style="display:none">暂停每日提醒</button>
+              <button class="btn small ghost" id="resumeSchedule" style="display:none">恢复每日提醒</button>
+            </div>
+            <button class="btn secondary w100" id="syncReminders" style="margin-top:10px">立即同步</button>
           </div>
           <div class="card" id="adminCard" style="display:none">
             <p class="section-title">发布市场事件（管理员）</p>
@@ -294,8 +300,8 @@
       $("adminCard").style.display = role==="admin" ? "" : "none";
       $("adminHint").style.display = role==="admin" ? "none" : "";
       $("loginOverlay").style.display="none";
-      $("leadDays").value = localStorage.getItem("leadDays")||0;
       await refreshAll();
+      await Promise.all([loadPrefs(),loadSchedules()]);
     } catch(e){$("loginError").textContent=e.message;}
   }
   $("login").addEventListener("click",login);
@@ -617,13 +623,48 @@
     document.querySelectorAll(".chips [data-filter]").forEach(x=>x.classList.remove("on"));
     c.classList.add("on");alertFilter=c.dataset.filter;renderAlerts();
   }));
-  $("syncReminders").addEventListener("click",async()=>{
-    const n=Math.max(0,Number($("leadDays").value)||0);
+  /* ── 提醒设置（服务端持久化，V2）── */
+  async function loadPrefs() {
+    try { const p=await api("/api/v2/me/notification-preferences"); $("leadDays").value=p.lead_days; }
+    catch(e){/* 未登录等场景忽略 */}
+  }
+  async function loadSchedules() {
+    try {
+      const arr=await api("/api/v2/schedules");
+      const box=$("scheduleInfo");box.replaceChildren();
+      const pause=$("pauseSchedule"),resume=$("resumeSchedule");
+      if(!arr.length){box.append(el("div","尚无定时计划"));return;}
+      const s=arr[0];
+      box.dataset.sid=s.id;
+      let next="—";
+      if(s.enabled&&s.next_run_at){const d=new Date(s.next_run_at+"Z");next=isNaN(d)?"—":d.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"});}
+      box.append(el("div",`每日提醒计划：${s.enabled?"启用中":"已暂停"}${s.enabled?` · 下次 ${next}`:""}`));
+      pause.style.display=s.enabled?"":"none";
+      resume.style.display=s.enabled?"none":"";
+    } catch(e){/* ignore */}
+  }
+  $("savePrefs").addEventListener("click",async()=>{
     try{
-      localStorage.setItem("leadDays",String(n));
-      const r=await api(`/reminders/reconcile?lead_days=${n}`,"POST");
+      const r=await api("/api/v2/me/notification-preferences","PUT",{lead_days:Math.max(0,Number($("leadDays").value)||0)});
+      bubble("设置已保存",`提前提醒 ${r.lead_days} 天（保存在服务器，所有设备一致）`);
+    }catch(e){alert(e.message);}
+  });
+  $("pauseSchedule").addEventListener("click",async()=>{
+    try{await api(pauseUrl(),"POST");await loadSchedules();bubble("每日提醒","已暂停：系统不再自动生成到期提醒");}
+    catch(e){alert(e.message);}
+  });
+  function pauseUrl(){
+    return "/api/v2/schedules/"+$("scheduleInfo").dataset.sid+"/pause";
+  }
+  $("resumeSchedule").addEventListener("click",async()=>{
+    try{await api("/api/v2/schedules/"+$("scheduleInfo").dataset.sid+"/resume","POST");await loadSchedules();bubble("每日提醒","已恢复。");}
+    catch(e){alert(e.message);}
+  });
+  $("syncReminders").addEventListener("click",async()=>{
+    try{
+      const r=await api("/reminders/reconcile","POST");  // 使用服务器保存的偏好
       await loadAlerts();
-      bubble("提醒已同步",`新增 ${r.alerts_created} 条站内提醒（提前 ${n} 天口径）`);
+      bubble("提醒已同步",`新增 ${r.alerts_created} 条站内提醒（提前 ${r.lead_days} 天口径）`);
     }catch(e){alert(e.message);}
   });
   $("publishSignal").addEventListener("click",async()=>{

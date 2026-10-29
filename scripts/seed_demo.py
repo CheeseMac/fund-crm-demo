@@ -18,10 +18,13 @@ from app.database import engine, SessionLocal
 from app.models import (
     Tenant, User, Customer, Contact, Visit, Need, Holding, FollowUp,
     MarketSignal, Alert, PendingAction, AuditLog,
+    TaskSchedule, JobRun, OutboxEvent, UserNotificationPrefs,
 )
 from app.security import hash_password
 from app.dependencies import Actor
 from app.services.market import reconcile_market_signal, reconcile_due_tasks
+from app.workers.scheduling import ensure_default_schedule
+from app.application.notifications import get_or_create_prefs
 
 
 def _load_env(path=".env"):
@@ -51,7 +54,8 @@ def reset(db):
     if not tenant:
         return
     tid = tenant.id
-    for model in (Alert, PendingAction, AuditLog, MarketSignal, FollowUp,
+    for model in (Alert, PendingAction, AuditLog, OutboxEvent, JobRun, TaskSchedule,
+                  UserNotificationPrefs, MarketSignal, FollowUp,
                   Holding, Need, Visit, Contact, Customer, User):
         db.execute(delete(model).where(model.tenant_id == tid))
     db.execute(delete(Tenant).where(Tenant.id == tid))
@@ -131,6 +135,15 @@ def main():
         db.add_all([admin, sales, colleague])
         db.flush()
         owner = sales.id
+
+        # V2：为每个用户建默认计划（每日 08:30 到期提醒）与通知偏好
+        for user in (admin, sales, colleague):
+            ensure_default_schedule(db, tid, user.id)
+            db.add(UserNotificationPrefs(
+                tenant_id=tid, user_id=user.id,
+                timezone="Asia/Shanghai", lead_days=0,
+                channels=["inbox"], digest_mode="instant"))
+        db.commit()
 
         # ── 客户1：华星资管（机构，红利主题，市场事件命中）──
         hx = add_customer(db, tid, owner, "华星资管", "institution",

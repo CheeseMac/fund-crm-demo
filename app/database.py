@@ -7,7 +7,8 @@ class Base(DeclarativeBase):
 
 kwargs = {"pool_pre_ping": True}
 if settings.database_url.startswith("sqlite"):
-    kwargs["connect_args"] = {"check_same_thread": False}
+    # timeout：后台维护循环与请求线程并发时等待写锁，而非立刻报 database is locked
+    kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
 engine = create_engine(settings.database_url, **kwargs)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
