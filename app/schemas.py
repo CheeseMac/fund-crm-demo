@@ -87,3 +87,16 @@ class PrefsIn(BaseModel):
     lead_days: int | None = Field(default=None, ge=0, le=30)
     timezone: str | None = Field(default=None, max_length=64)
     channels: list[str] | None = Field(default=None, max_length=10)
+
+class MediaInitiateIn(BaseModel):
+    customer_id: str
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=3, max_length=120)
+    declared_size: int = Field(gt=0)
+
+class MeetingIn(BaseModel):
+    customer_id: str
+    title: str = Field(min_length=2, max_length=200)
+    occurred_on: date
+    contact_id: str | None = None
+    asset_ids: list[str] = Field(default_factory=list, max_length=50)

@@ -18,12 +18,15 @@ from app.models import (
 from app.schemas import (
     TenantRegistration, LoginIn, UserIn, CustomerIn, ContactIn,
     InterpretIn, MarketSignalIn, TaskIn, HoldingIn, PrefsIn,
+    MediaInitiateIn, MeetingIn,
 )
 from app.security import hash_password, verify_password, create_token
 from app.application import assistant as assistant_app
 from app.application import tasks as tasks_app
 from app.application import market as market_app
 from app.application import notifications as notifications_app
+from app.application import media as media_app
+from app.application import meetings as meetings_app
 from app.workers.scheduling import ensure_default_schedule, next_occurrence
 from app.services.market import reconcile_due_tasks
 from app.ai.text_rules import local_today
@@ -463,3 +466,77 @@ def recent_outbox(actor: Actor = Depends(require_admin), db: Session = Depends(g
     return [{"event_id": e.event_id, "event_type": e.event_type,
              "delivery_status": e.delivery_status, "attempts": e.attempts,
              "occurred_at": e.occurred_at.isoformat()} for e in rows]
+
+# ── V2 PR3/PR4：多媒体与会议（docs/05 §5）──
+
+@router.post("/api/v2/media/uploads/initiate", status_code=201)
+def media_initiate(payload: MediaInitiateIn, actor: Actor = Depends(get_actor),
+                   db: Session = Depends(get_db)):
+    return media_app.initiate_upload(
+        db, actor, payload.customer_id, payload.filename,
+        payload.content_type, payload.declared_size)
+
+@router.put("/api/v2/media/{asset_id}/upload")
+async def media_upload(asset_id: str, request: __import__("fastapi").Request,
+                       actor: Actor = Depends(get_actor),
+                       db: Session = Depends(get_db)):
+    payload = await request.body()
+    return media_app.store_upload(db, actor, asset_id, payload)
+
+@router.post("/api/v2/media/{asset_id}/complete")
+def media_complete(asset_id: str, actor: Actor = Depends(get_actor),
+                   db: Session = Depends(get_db)):
+    asset = media_app.get_asset(db, actor, asset_id)
+    return {"asset_id": asset["id"], "state": asset["state"],
+            "scan_result": asset["scan_result"]}
+
+@router.get("/api/v2/media")
+def media_list(customer_id: str, actor: Actor = Depends(get_actor),
+               db: Session = Depends(get_db)):
+    return media_app.list_assets(db, actor, customer_id)
+
+@router.get("/api/v2/media/{asset_id}")
+def media_get(asset_id: str, actor: Actor = Depends(get_actor),
+              db: Session = Depends(get_db)):
+    return media_app.get_asset(db, actor, asset_id)
+
+@router.get("/api/v2/media/{asset_id}/access")
+def media_access(asset_id: str, actor: Actor = Depends(get_actor),
+                 db: Session = Depends(get_db)):
+    return media_app.issue_access(db, actor, asset_id)
+
+@router.get("/api/v2/media/{asset_id}/download")
+def media_download(asset_id: str, token: str,
+                   db: Session = Depends(get_db)):
+    # 下载凭短时票据（浏览器可直接打开）；元数据/签发接口仍需登录
+    asset = media_app.read_for_download(db, asset_id, token)
+    from fastapi.responses import Response
+    data = media_app.load_bytes(asset)
+    return Response(content=data, media_type=asset.content_type,
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{asset.filename.encode("utf-8").decode("latin-1", "ignore")}"',
+                             "Cache-Control": "no-store"})
+
+@router.post("/api/v2/meetings", status_code=201)
+def meetings_create(payload: MeetingIn, actor: Actor = Depends(get_actor),
+                    db: Session = Depends(get_db)):
+    meeting = meetings_app.create_meeting(
+        db, actor, payload.customer_id, payload.title, payload.occurred_on,
+        payload.contact_id, payload.asset_ids)
+    return {"id": meeting.id, "linked_assets": getattr(meeting, "linked_assets", 0)}
+
+@router.get("/api/v2/meetings")
+def meetings_list(customer_id: str, actor: Actor = Depends(get_actor),
+                  db: Session = Depends(get_db)):
+    return meetings_app.list_meetings(db, actor, customer_id)
+
+@router.get("/api/v2/meetings/{meeting_id}")
+def meetings_get(meeting_id: str, actor: Actor = Depends(get_actor),
+                 db: Session = Depends(get_db)):
+    return meetings_app.get_meeting(db, actor, meeting_id)
+
+@router.post("/api/v2/meetings/{meeting_id}/extract-draft")
+def meetings_extract(meeting_id: str, actor: Actor = Depends(get_actor),
+                     db: Session = Depends(get_db)):
+    result = meetings_app.extract_draft_placeholder(db, actor, meeting_id)
+    raise HTTPException(501, result["message"])

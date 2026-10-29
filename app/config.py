@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     # 内置维护循环（计划物化/作业执行/Outbox 派发）；生产可拆独立进程
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 30
+    # 多媒体（PR3）：单文件上限与 MCP 入口开关
+    media_max_bytes: int = 200 * 1024 * 1024
+    mcp_enabled: bool = True
 
 settings = Settings()
 

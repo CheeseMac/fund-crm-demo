@@ -315,3 +315,71 @@ class OutboxEvent(Base):
     delivery_status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Meeting(Base):
+    """客户会议记录（PR4 占位）：转写/纪要生成在 PR4 接入 Transcriber 端口后补全。"""
+    __tablename__ = "meetings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "id"),
+        UniqueConstraint("tenant_id", "owner_user_id", "customer_id", "id"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id", "customer_id"],
+                             ["customers.tenant_id", "customers.owner_user_id", "customers.id"]),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id", "customer_id", "contact_id"],
+                             ["contacts.tenant_id", "contacts.owner_user_id",
+                              "contacts.customer_id", "contacts.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    customer_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    contact_id: Mapped[str | None] = mapped_column(String(36))
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    minutes_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    minutes_status: Mapped[str] = mapped_column(String(20), default="none", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MediaAsset(Base):
+    """多媒体资产（docs/05 §5.2）：元数据在 PG，字节在私有对象存储。"""
+    __tablename__ = "media_assets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "id"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id", "customer_id"],
+                             ["customers.tenant_id", "customers.owner_user_id", "customers.id"]),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id", "customer_id", "meeting_id"],
+                             ["meetings.tenant_id", "meetings.owner_user_id",
+                              "meetings.customer_id", "meetings.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    customer_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    meeting_id: Mapped[str | None] = mapped_column(String(36))
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    category: Mapped[str] = mapped_column(String(20), default="other", nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    storage_key: Mapped[str | None] = mapped_column(String(400))
+    state: Mapped[str] = mapped_column(String(20), default="pending_upload", nullable=False)
+    scan_result: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MediaProcessingJob(Base):
+    """媒体处理留痕（扫描/探针/转写占位）：stage/status/attempt/error。"""
+    __tablename__ = "media_processing_jobs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    stage: Mapped[str] = mapped_column(String(20), nullable=False)  # scan / probe / asr
+    status: Mapped[str] = mapped_column(String(20), default="queued", nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

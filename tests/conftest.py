@@ -3,6 +3,8 @@ os.environ["DEV_MODE"] = "true"
 os.environ["ALLOW_DEV_TENANT_REGISTRATION"] = "true"
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["LLM_ENABLED"] = "false"
+# 测试直接调用 workers 单元；内嵌循环会打到内存库报错，关闭
+os.environ["SCHEDULER_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,8 +28,13 @@ def client():
         with factory() as db:
             yield db
     api_app.dependency_overrides[get_db] = override_db
+    # MCP 入口不经过 FastAPI 依赖注入，单独把它使用的会话工厂指到测试库
+    import app.mcp_entry
+    original_mcp_db = app.mcp_entry._db
+    app.mcp_entry._db = factory
     with TestClient(api_app) as cli:
         yield cli
+    app.mcp_entry._db = original_mcp_db
     api_app.dependency_overrides.clear()
     engine.dispose()
 

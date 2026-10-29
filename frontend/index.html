@@ -275,6 +275,13 @@
     return obj;
   }
   const el = (tag, text, cls) => { const n=document.createElement(tag); if(text!==undefined) n.textContent=text; if(cls) n.className=cls; return n; };
+  async function apiRaw(path, method="PUT", data) {
+    const headers={}; if (token) headers.Authorization="Bearer "+token;
+    const res=await fetch(path,{method,headers,body:data,cache:"no-store"});
+    let obj; try { obj=await res.json(); } catch { obj={detail:"请求失败"}; }
+    if (!res.ok) throw new Error(typeof obj.detail==="string"?obj.detail:("HTTP "+res.status));
+    return obj;
+  }
 
   /* ── 导航 ── */
   function switchView(name) {
@@ -495,8 +502,99 @@
         }catch(e){alert(e.message);}
       });
       fh.append(pIn,codeIn,amtIn,asofIn,tagIn,hBtn);hf.append(fh);hc.append(hf);box.append(hc);
+
+      const mediaCard=el("div",undefined,"sub-card");
+      mediaCard.append(el("p","素材与会议","section-title"));
+      const mediaBox=el("div");
+      mediaCard.append(mediaBox);
+      box.append(mediaCard);
+      loadMediaSection(cid, mediaBox);
     } catch(e){box.replaceChildren(el("div","empty","加载失败："+e.message));}
   }
+  async function loadMediaSection(cid, box) {
+    box.replaceChildren(el("div","加载中…","muted"));
+    try {
+      const [assets, meetings] = await Promise.all([
+        api(`/api/v2/media?customer_id=${cid}`),
+        api(`/api/v2/meetings?customer_id=${cid}`)]);
+      box.replaceChildren();
+      // 上传
+      const uf=el("details",undefined,"manage");
+      uf.append(el("summary","上传素材（录音/录像/图片/PDF/Markdown，≤200MB）"));
+      const fc=el("div",undefined,"card");
+      const file=el("input"); file.type="file";
+      const ub=el("button","上传并安全扫描","btn secondary w100");
+      ub.addEventListener("click",async()=>{
+        const f=file.files[0]; if(!f){alert("请选择文件");return;}
+        try{
+          const init=await api("/api/v2/media/uploads/initiate","POST",{
+            customer_id:cid,filename:f.name,
+            content_type:f.type||"application/octet-stream",declared_size:f.size});
+          const up=await apiRaw(init.upload_url,"PUT",f);
+          bubble("素材已上传",`${f.name} · ${up.state==="ready"?"已通过安全扫描":"状态："+up.state}`);
+          loadMediaSection(cid, box);
+        }catch(e){alert(e.message);}
+      });
+      fc.append(file,ub); uf.append(fc); box.append(uf);
+      // 素材列表
+      const al=el("div"); al.style.marginTop="12px";
+      assets.forEach(a=>{
+        const r=el("div",undefined,"row-item"); const g=el("div",undefined,"grow");
+        g.append(el("strong",a.filename));
+        const st=el("span",a.state==="ready"?"已就绪":a.state==="rejected"?"已拒绝":"待上传",
+          "tag-pill"+(a.state==="ready"?"":a.state==="rejected"?" red":" gray"));
+        const line=el("div","muted",`${a.content_type} · ${(a.size_bytes/1024).toFixed(0)}KB`);
+        g.append(line,st);
+        r.append(g);
+        if(a.state==="ready"){
+          const db=el("button","下载","btn small secondary");
+          db.addEventListener("click",async()=>{
+            try{const acc=await api(`/api/v2/media/${a.id}/access`);window.open(acc.download_url,"_blank");}
+            catch(e){alert(e.message);}
+          });
+          r.append(db);
+        }
+        al.append(r);
+      });
+      if(!assets.length) al.append(el("div","empty","暂无素材"));
+      box.append(al);
+      // 会议
+      const ml=el("div"); ml.style.marginTop="14px";
+      ml.append(el("div","会议记录","section-title"));
+      meetings.forEach(m=>{
+        const r=el("div",undefined,"row-item"); const g=el("div",undefined,"grow");
+        g.append(el("strong",`${m.occurred_on} · ${m.title}`));
+        g.append(el("span",m.minutes_status==="none"?"纪要未生成（PR4）":"已生成","tag-pill gray"));
+        r.append(g);
+        const eb=el("button","生成纪要","btn small ghost");
+        eb.addEventListener("click",async()=>{
+          try{await api(`/api/v2/meetings/${m.id}/extract-draft`,"POST");}
+          catch(e){alert(e.message);}  // 501 占位说明
+        });
+        r.append(eb);
+        ml.append(r);
+      });
+      if(!meetings.length) ml.append(el("div","empty","暂无会议记录"));
+      const mf=el("details",undefined,"manage"); mf.style.marginTop="10px";
+      mf.append(el("summary","新建会议记录"));
+      const fmc=el("div",undefined,"card");
+      const tIn=el("input"); tIn.placeholder="会议主题，如：红利策略交流";
+      const dIn=el("input"); dIn.type="date"; dIn.value=todayISO(); dIn.style.marginTop="8px";
+      const mb=el("button","保存会议","btn secondary w100");
+      mb.addEventListener("click",async()=>{
+        try{
+          await api("/api/v2/meetings","POST",{customer_id:cid,title:tIn.value.trim(),occurred_on:dIn.value});
+          loadMediaSection(cid, box);
+        }catch(e){alert(e.message);}
+      });
+      const fmCard=el("div",undefined,"card");
+      fmCard.append(tIn,dIn,mb);
+      mf.append(fmCard);
+      ml.append(mf);
+      box.append(ml);
+    } catch(e){box.replaceChildren(el("div","加载失败："+e.message,"muted"));}
+  }
+
   async function exportMd(cid){
     try{
       const res=await fetch(`/customers/${cid}/export.md`,{headers:{Authorization:"Bearer "+token}});
