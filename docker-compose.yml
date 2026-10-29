@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: fundcrm
+      POSTGRES_USER: crm_owner
+      POSTGRES_PASSWORD: local_owner_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm_owner -d fundcrm"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # Do not publish database port unless debugging on trusted localhost.
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DEV_MODE: "false"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set_JWT_SECRET_KEY_32_plus_characters}
+      DATABASE_URL: postgresql+psycopg://crm_owner:local_owner_password@db:5432/fundcrm
+      MIGRATION_DATABASE_URL: postgresql+psycopg://crm_owner:local_owner_password@db:5432/fundcrm
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    build: .
+    environment:
+      DEV_MODE: "false"
+      ALLOW_DEV_TENANT_REGISTRATION: "false"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set_JWT_SECRET_KEY_32_plus_characters}
+      DATABASE_URL: postgresql+psycopg://crm_app:local_app_password@db:5432/fundcrm
+      APP_TIMEZONE: Asia/Shanghai
+      LLM_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+volumes:
+  pgdata:

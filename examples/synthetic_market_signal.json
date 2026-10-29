@@ -1,0 +1,10 @@
+{
+  "external_key": "DEMO-STYLE-ROTATION-2026-10-28",
+  "kind": "style_rotation",
+  "severity": 4,
+  "tags": ["dividend"],
+  "headline": "演示事件：红利风格发生变化（纯虚构，不代表真实行情）",
+  "details_md": "本条仅用于联调CRM主题匹配和站内提醒，禁止当作投资研究或营销信息。",
+  "evidence_url": "https://example.org/mock-event",
+  "happened_on": "2026-10-28"
+}
