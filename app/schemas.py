@@ -100,3 +100,12 @@ class MeetingIn(BaseModel):
     occurred_on: date
     contact_id: str | None = None
     asset_ids: list[str] = Field(default_factory=list, max_length=50)
+
+class ObservationIn(BaseModel):
+    provider: str = Field(min_length=2, max_length=80)
+    external_key: str = Field(min_length=4, max_length=160)
+    symbol_or_topic: str = Field(min_length=2, max_length=80)
+    observed_on: date
+    change_pct: float = Field(ge=-100, le=100)
+    note: str = Field(default="", max_length=500)
+    quality: str = "validated"

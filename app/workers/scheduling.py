@@ -41,9 +41,24 @@ def next_occurrence(hour: int, minute: int, weekday: int | None,
     return candidate.astimezone(timezone.utc)
 
 
+DEFAULT_SCHEDULES = {
+    # kind -> (hour, minute, weekday)  weekday: None=每天, 0=周一
+    "daily_reminder": (8, 30, None),
+    "weekly_report": (8, 45, 0),
+}
+
+
 def ensure_default_schedule(db: Session, tenant_id: str, user_id: str,
                             kind: str = "daily_reminder") -> TaskSchedule:
-    """为用户确保存在默认计划（每日 08:30 生成到期提醒）。"""
+    """确保默认计划存在（每日 08:30 到期提醒 + 周一 08:45 周报），返回指定 kind 的计划。"""
+    for k, (hour, minute, weekday) in DEFAULT_SCHEDULES.items():
+        _ensure_one(db, tenant_id, user_id, k, hour, minute, weekday)
+    hour, minute, weekday = DEFAULT_SCHEDULES.get(kind, (8, 30, None))
+    return _ensure_one(db, tenant_id, user_id, kind, hour, minute, weekday)
+
+
+def _ensure_one(db: Session, tenant_id: str, user_id: str, kind: str,
+                hour: int, minute: int, weekday: int | None) -> TaskSchedule:
     existing = db.scalar(select(TaskSchedule).where(
         TaskSchedule.tenant_id == tenant_id,
         TaskSchedule.owner_user_id == user_id,
@@ -54,8 +69,8 @@ def ensure_default_schedule(db: Session, tenant_id: str, user_id: str,
         return existing
     schedule = TaskSchedule(
         id=uid(), tenant_id=tenant_id, owner_user_id=user_id, kind=kind,
-        hour=8, minute=30, weekday=None, timezone=settings.app_timezone,
-        next_run_at=next_occurrence(8, 30, None, settings.app_timezone, _utcnow()),
+        hour=hour, minute=minute, weekday=weekday, timezone=settings.app_timezone,
+        next_run_at=next_occurrence(hour, minute, weekday, settings.app_timezone, _utcnow()),
         enabled=True, misfire_policy="run_once",
     )
     db.add(schedule)

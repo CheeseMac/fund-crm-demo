@@ -18,7 +18,7 @@ from app.models import (
 from app.schemas import (
     TenantRegistration, LoginIn, UserIn, CustomerIn, ContactIn,
     InterpretIn, MarketSignalIn, TaskIn, HoldingIn, PrefsIn,
-    MediaInitiateIn, MeetingIn,
+    MediaInitiateIn, MeetingIn, ObservationIn,
 )
 from app.security import hash_password, verify_password, create_token
 from app.application import assistant as assistant_app
@@ -540,3 +540,67 @@ def meetings_extract(meeting_id: str, actor: Actor = Depends(get_actor),
                      db: Session = Depends(get_db)):
     result = meetings_app.extract_draft_placeholder(db, actor, meeting_id)
     raise HTTPException(501, result["message"])
+
+# ── V2 PR5：看板 / 确定性周报 / 市场观察流水线（docs/05 §3、§9.1）──
+
+@router.get("/api/v2/dashboard")
+def dashboard_view(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    from app.application import reports as reports_app
+    return reports_app.dashboard(db, actor)
+
+@router.get("/api/v2/reports")
+def reports_list(kind: str = "weekly", actor: Actor = Depends(get_actor),
+                 db: Session = Depends(get_db)):
+    from app.application import reports as reports_app
+    return reports_app.list_reports(db, actor, kind)
+
+@router.post("/api/v2/reports/generate")
+def reports_generate(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    """手工生成上周周报：排入 JobRun 并立即执行（与定时路径同一用例，幂等）。"""
+    from app.application import reports as reports_app
+    from app.models import JobRun
+    from app.workers.runner import execute_job
+    idem = f"manual-report:{actor.user_id}:{local_today().isoformat()}"
+    job = db.scalar(select(JobRun).where(JobRun.idempotency_key == idem))
+    if job is None:
+        job = JobRun(id=uid(), tenant_id=actor.tenant_id, owner_user_id=actor.user_id,
+                     job_type="weekly_report", payload={},
+                     scheduled_for=utcnow(), available_at=utcnow(),
+                     idempotency_key=idem)
+        db.add(job)
+        db.commit()
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False, autoflush=False)
+    result = execute_job(factory, job.id)
+    result.setdefault("created", False)
+    reports = reports_app.list_reports(db, actor, "weekly", 1)
+    return {"job": result, "report": reports[0] if reports else None}
+
+@router.post("/internal/market/observations", status_code=201)
+def market_ingest(payload: ObservationIn,
+                  actor: Actor = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    """受权服务/管理员录入市场观察（虚构演示数据），阈值规则生成待复核候选。"""
+    from app.application import market_observation as obs_app
+    return obs_app.ingest_observation(
+        db, actor, payload.provider, payload.external_key,
+        payload.symbol_or_topic, payload.observed_on,
+        payload.change_pct, payload.note, payload.quality)
+
+@router.get("/api/v2/market/candidates")
+def market_candidates(status: str | None = None,
+                      actor: Actor = Depends(require_admin),
+                      db: Session = Depends(get_db)):
+    from app.application import market_observation as obs_app
+    return obs_app.list_candidates(db, actor, status)
+
+@router.post("/api/v2/market/candidates/{candidate_id}/accept")
+def market_accept(candidate_id: str, actor: Actor = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    from app.application import market_observation as obs_app
+    return obs_app.decide_candidate(db, actor, candidate_id, accept=True)
+
+@router.post("/api/v2/market/candidates/{candidate_id}/reject")
+def market_reject(candidate_id: str, actor: Actor = Depends(require_admin),
+                  db: Session = Depends(get_db)):
+    from app.application import market_observation as obs_app
+    return obs_app.decide_candidate(db, actor, candidate_id, accept=False)

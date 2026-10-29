@@ -64,6 +64,17 @@ def _run_daily_reminder(factory: sessionmaker, job: JobRun) -> dict:
     return {"alerts_created": created, "lead_days": lead}
 
 
+def _run_weekly_report(factory: sessionmaker, job: JobRun) -> dict:
+    """确定性周报：SQL 统计上一完整周，同周幂等（唯一约束）。"""
+    from app.application.reports import upsert_weekly_report
+    from app.dependencies import Actor as _Actor
+    with factory() as db:
+        actor = _Actor(user_id=job.owner_user_id, tenant_id=job.tenant_id, role="sales")
+        report, created = upsert_weekly_report(db, actor)
+        return {"report_id": report.id, "created": created,
+                "period_start": report.period_start.isoformat()}
+
+
 def _run_market_match(factory: sessionmaker, job: JobRun) -> dict:
     signal_id = (job.payload or {}).get("signal_id", "")
     created = reconcile_market_signal(factory, job.tenant_id, signal_id,
@@ -81,6 +92,8 @@ def execute_job(factory: sessionmaker, job_id: str) -> dict:
         try:
             if job.job_type == "daily_reminder":
                 detail = _run_daily_reminder(factory, job)
+            elif job.job_type == "weekly_report":
+                detail = _run_weekly_report(factory, job)
             elif job.job_type == "market_match":
                 detail = _run_market_match(factory, job)
             else:

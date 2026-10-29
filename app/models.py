@@ -383,3 +383,63 @@ class MediaProcessingJob(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GeneratedReport(Base):
+    """确定性周报（docs/05 §3）：SQL 统计快照，模型仅可选叙述层。"""
+    __tablename__ = "generated_reports"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "kind", "period_start"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id"], ["users.tenant_id", "users.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), default="weekly", nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    summary_md: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    source: Mapped[str] = mapped_column(String(40), default="sql_builder", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MarketObservation(Base):
+    """市场事实输入（docs/05 §3）：带来源与时效的观察，不等于交易信号。"""
+    __tablename__ = "market_observations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "external_key"),
+        UniqueConstraint("tenant_id", "id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    external_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    symbol_or_topic: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), default="index_change", nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    quality: Mapped[str] = mapped_column(String(20), default="raw", nullable=False)
+    observed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MarketSignalCandidate(Base):
+    """候选市场事件（docs/05 §3）：阈值规则产出，必须人工复核后才成为正式事件。"""
+    __tablename__ = "market_signal_candidates"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "observation_id"),
+        ForeignKeyConstraint(["tenant_id", "observation_id"],
+                             ["market_observations.tenant_id", "market_observations.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    observation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[int] = mapped_column(Integer, nullable=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    headline: Mapped[str] = mapped_column(String(240), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    reviewer_id: Mapped[str | None] = mapped_column(String(36))
+    signal_id: Mapped[str | None] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

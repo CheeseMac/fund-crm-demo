@@ -80,6 +80,11 @@
     details.manage[open] summary::before {content:"× "}
     details.manage .card {margin-top:12px}
     .grid2 {display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .stat-cards {display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+    .stat-card {border:1px solid var(--line);border-radius:12px;background:#fff;padding:12px 14px}
+    .stat-card b {display:block;font-size:22px;font-family:Georgia,"Songti SC",serif}
+    .stat-card span {font-size:12px;color:var(--sub)}
+    .stat-card.warn b {color:var(--red)}
     .empty {padding:22px;text-align:center;color:var(--sub);font-size:13px}
     #loginOverlay {position:fixed;inset:0;background:#1b332fad;display:grid;place-items:center;z-index:10;padding:16px}
     #loginBox {background:#fff;width:min(420px,100%);border-radius:20px;padding:30px;box-shadow:0 18px 60px #0b231c30}
@@ -105,6 +110,7 @@
       <button data-view="workbench" class="active">工作台</button>
       <button data-view="customers">客户管理</button>
       <button data-view="tasks">待办事项</button>
+      <button data-view="board">工作看板</button>
       <button data-view="alerts">提醒中心</button>
     </nav>
     <div class="badge" id="identity" title="点击可切换账号" style="cursor:pointer">未登录 · 内部工作台</div>
@@ -188,6 +194,30 @@
       </div>
     </section>
 
+    <section id="view-board" class="view">
+      <div class="page">
+        <div class="pane">
+          <div class="page-head">
+            <h2>工作看板</h2>
+            <button class="btn small ghost" id="reloadBoard">刷新</button>
+          </div>
+          <div id="boardStats" class="stat-cards"></div>
+          <div class="sub-card">
+            <p class="section-title">近 8 周趋势（拜访 / 新增需求 / 提醒）</p>
+            <div id="boardTrend"></div>
+          </div>
+          <div class="sub-card">
+            <p class="section-title">周报（确定性 SQL 统计，无 AI 参与）</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+              <button class="btn small" id="genReport">生成上周周报</button>
+            </div>
+            <div id="latestReport" class="muted">尚无周报，点击上方按钮生成。</div>
+            <div id="reportList" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="view-alerts" class="view">
       <div class="page">
         <div class="pane">
@@ -234,6 +264,23 @@
             <input id="sigHeadline" placeholder="如：演示事件：科技板块波动放大">
             <button class="btn w100" id="publishSignal">发布并匹配客户</button>
             <p class="muted" style="margin-top:8px">发布后按客户持仓/需求主题匹配生成站内提醒；仅限内部复核。</p>
+          </div>
+          <div class="card" id="obsCard" style="display:none">
+            <p class="section-title">市场观察 → 候选复核（阈值规则）</p>
+            <div class="grid2">
+              <div><label for="obsTopic">主题（中文映射标签）</label>
+                <select id="obsTopic">
+                  <option value="红利">红利</option><option value="债券">债券</option>
+                  <option value="科技">科技</option><option value="成长">成长</option>
+                  <option value="宽基">宽基</option><option value="量化">量化</option>
+                </select></div>
+              <div><label for="obsChange">涨跌幅 %（|x|≥3 触发候选）</label>
+                <input id="obsChange" type="number" step="0.1" placeholder="如 -5.2"></div>
+            </div>
+            <label for="obsProvider">数据来源（虚构演示）</label>
+            <input id="obsProvider" placeholder="如：演示研究台">
+            <button class="btn secondary w100" id="submitObs">录入观察</button>
+            <div id="obsList" style="margin-top:10px"></div>
           </div>
           <p class="notice" id="adminHint">市场事件由管理员账号在提醒中心发布。</p>
         </div>
@@ -289,6 +336,7 @@
     document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name));
     if (name==="customers") loadCustomers();
     if (name==="tasks") loadTasksAll();
+    if (name==="board") loadBoard();
     if (name==="alerts") loadAlerts();
   }
   document.querySelectorAll("nav button").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
@@ -305,7 +353,9 @@
       role=identity.role;
       $("identity").textContent=`已登录 · ${role==="admin"?"管理员":"销售"} · ${$("email").value.trim()}`;
       $("adminCard").style.display = role==="admin" ? "" : "none";
+      $("obsCard").style.display = role==="admin" ? "" : "none";
       $("adminHint").style.display = role==="admin" ? "none" : "";
+      if (role==="admin") loadCandidates();
       $("loginOverlay").style.display="none";
       await refreshAll();
       await Promise.all([loadPrefs(),loadSchedules()]);
@@ -721,6 +771,78 @@
     document.querySelectorAll(".chips [data-filter]").forEach(x=>x.classList.remove("on"));
     c.classList.add("on");alertFilter=c.dataset.filter;renderAlerts();
   }));
+  /* ── 工作看板（V2 PR5：确定性周报与趋势）── */
+  const STAT_DEFS = [
+    ["visits","本周拜访",false],["needs_created","本周新增需求",false],
+    ["alerts_created","本周新增提醒",false],["holdings_created","本周持仓申报",false],
+    ["overdue_now","当前逾期",true],["upcoming_7d","未来7天到期",false],
+    ["customers_total","客户总数",false],["open_needs","开放需求",false]];
+  async function loadBoard() {
+    try {
+      const d = await api("/api/v2/dashboard");
+      const cards=$("boardStats"); cards.replaceChildren();
+      STAT_DEFS.forEach(([k,label,warn])=>{
+        const c=el("div",undefined,"stat-card"+(warn&&d.this_week[k]>0?" warn":""));
+        c.append(el("b",String(d.this_week[k] ?? 0)));
+        c.append(el("span",label));
+        cards.append(c);
+      });
+      renderTrend(d.trend_weeks);
+      const lr=d.latest_report;
+      const lbox=$("latestReport"); lbox.replaceChildren();
+      if(lr){
+        const t=el("strong",`${lr.period_start} ~ ${lr.period_end}`);
+        lbox.append(t, el("div", clean(lr.summary_md)));
+      } else lbox.append(el("div","尚无周报，点击上方按钮生成。","muted"));
+      const reports=await api("/api/v2/reports");
+      const list=$("reportList"); list.replaceChildren();
+      reports.slice(0,8).forEach(r=>{
+        const row=el("div",undefined,"row-item");
+        const g=el("div",undefined,"grow");
+        g.append(el("strong",`${r.period_start} ~ ${r.period_end}`));
+        g.append(el("div",`拜访 ${r.metrics.visits} · 新需求 ${r.metrics.needs_created} · 提醒 ${r.metrics.alerts_created} · 逾期 ${r.metrics.overdue_now}`,"muted"));
+        row.append(g); list.append(row);
+      });
+    } catch(e){ $("boardStats").replaceChildren(el("div","empty","加载失败："+e.message)); }
+  }
+  function renderTrend(weeks) {
+    const box=$("boardTrend"); box.replaceChildren();
+    if(!weeks||!weeks.length){box.append(el("div","empty","无数据"));return;}
+    const W=560,H=170,pad=26;
+    const maxV=Math.max(2,...weeks.map(w=>Math.max(w.visits,w.needs_created,w.alerts)));
+    const bw=Math.min(26,(W-pad*2)/weeks.length/3-3);
+    const group=(W-pad*2)/weeks.length;
+    let svg=`<svg viewBox="0 0 ${W} ${H+22}" style="width:100%;height:auto" role="img" aria-label="近8周趋势">`;
+    for(let i=0;i<=3;i++){const y=pad+(H-pad*2)*i/3;
+      svg+=`<line x1="${pad}" y1="${y}" x2="${W-pad}" y2="${y}" stroke="#d8e1dc"/>`;}
+    weeks.forEach((w,i)=>{
+      const x0=pad+group*i+group/2;
+      const bars=[["visits",w.visits,"#007e66"],["needs_created",w.needs_created,"#edb96a"],["alerts",w.alerts,"#aa6237"]];
+      bars.forEach(([k,v,color],j)=>{
+        const h=Math.round((H-pad*2)*(v/maxV));
+        const x=x0-bw*1.5+j*(bw+2);
+        svg+=`<rect x="${x.toFixed(1)}" y="${(H-h).toFixed(1)}" width="${bw}" height="${h}" rx="2" fill="${color}"><title>${w.week_start} ${k}: ${v}</title></rect>`;
+      });
+      svg+=`<text x="${x0.toFixed(1)}" y="${H+14}" font-size="9" fill="#648078" text-anchor="middle">${w.week_start.slice(5)}</text>`;
+    });
+    svg+=`<text x="${pad}" y="14" font-size="10" fill="#007e66">■ 拜访</text>`;
+    svg+=`<text x="${pad+52}" y="14" font-size="10" fill="#edb96a">■ 新需求</text>`;
+    svg+=`<text x="${pad+124}" y="14" font-size="10" fill="#aa6237">■ 提醒</text>`;
+    svg+="</svg>";
+    const holder=document.createElement("div");
+    holder.innerHTML=svg;
+    box.append(holder.firstChild);
+  }
+  $("reloadBoard").addEventListener("click",()=>loadBoard());
+  $("genReport").addEventListener("click",async()=>{
+    try{
+      const r=await api("/api/v2/reports/generate","POST");
+      const rep=r.report;
+      bubble("周报已生成", rep?`${rep.period_start} ~ ${rep.period_end}（${r.job.created?"新":"已存在，幂等"}）`:"未产生报告");
+      await loadBoard();
+    }catch(e){alert(e.message);}
+  });
+
   /* ── 提醒设置（服务端持久化，V2）── */
   async function loadPrefs() {
     try { const p=await api("/api/v2/me/notification-preferences"); $("leadDays").value=p.lead_days; }
@@ -778,6 +900,50 @@
       $("sigHeadline").value="";
       await loadAlerts();
       bubble("市场事件已发布",`命中并生成 ${r.alerts_created} 条客户提醒；仅用于内部复核。`);
+    }catch(e){alert(e.message);}
+  });
+  async function loadCandidates() {
+    try{
+      const list=await api("/api/v2/market/candidates");
+      const box=$("obsList"); box.replaceChildren();
+      if(!list.length){box.append(el("div","empty","暂无候选（录入观察后，|涨跌幅|≥3% 会生成待复核候选）"));return;}
+      list.slice(0,10).forEach(c=>{
+        const n=el("div",undefined,"row-item"); const g=el("div",undefined,"grow");
+        g.append(el("strong",c.headline));
+        const st=el("span",c.status==="pending"?"待复核":c.status==="accepted"?"已接受":"已拒绝",
+          "tag-pill"+(c.status==="pending"?" red":" gray"));
+        g.append(el("div",`severity ${c.severity} · 规则 ${c.rule_version}`,"muted"),st);
+        n.append(g);
+        if(c.status==="pending"){
+          const ok=el("button","接受","btn small secondary");
+          ok.addEventListener("click",async()=>{
+            try{const r=await api(`/api/v2/market/candidates/${c.id}/accept`,"POST");
+              bubble("候选已接受",`正式事件 ${r.signal_id.slice(0,8)}… 命中客户提醒 ${r.alerts_created} 条`);
+              await Promise.all([loadCandidates(),loadAlerts()]);
+            }catch(e){alert(e.message);}
+          });
+          const no=el("button","拒绝","btn small ghost");
+          no.addEventListener("click",async()=>{
+            try{await api(`/api/v2/market/candidates/${c.id}/reject`,"POST");await loadCandidates();}
+            catch(e){alert(e.message);}
+          });
+          n.append(ok,no);
+        }
+        box.append(n);
+      });
+    }catch(e){/* ignore */}
+  }
+  $("submitObs").addEventListener("click",async()=>{
+    const change=Number($("obsChange").value);
+    if(!$("obsProvider").value.trim()||isNaN(change)){alert("请填写来源与涨跌幅");return;}
+    try{
+      const r=await api("/internal/market/observations","POST",{
+        provider:$("obsProvider").value.trim(),
+        external_key:"OBS-"+Date.now(),
+        symbol_or_topic:$("obsTopic").value,
+        observed_on:todayISO(), change_pct:change});
+      bubble("观察已入库",r.verdict);
+      await loadCandidates();
     }catch(e){alert(e.message);}
   });
 })();
