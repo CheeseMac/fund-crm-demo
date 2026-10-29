@@ -111,6 +111,7 @@
       <button data-view="customers">客户管理</button>
       <button data-view="tasks">待办事项</button>
       <button data-view="board">工作看板</button>
+      <button data-view="viewpoints">市场观点</button>
       <button data-view="alerts">提醒中心</button>
     </nav>
     <div class="badge" id="identity" title="点击可切换账号" style="cursor:pointer">未登录 · 内部工作台</div>
@@ -213,6 +214,65 @@
             </div>
             <div id="latestReport" class="muted">尚无周报，点击上方按钮生成。</div>
             <div id="reportList" style="margin-top:10px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-viewpoints" class="view">
+      <div class="page" style="grid-template-columns:minmax(0,1fr) 290px">
+        <div class="pane">
+          <div class="page-head">
+            <h2>市场观点</h2>
+            <div class="chips" style="margin:0">
+              <select id="vpTagFilter" style="width:auto;padding:6px 10px"></select>
+              <input id="vpDateFrom" type="date" style="width:auto">
+              <span class="muted" style="align-self:center">至</span>
+              <input id="vpDateTo" type="date" style="width:auto">
+              <button class="btn small ghost" id="vpSearch">筛选</button>
+            </div>
+          </div>
+          <details class="manage" id="vpFormBox" style="margin:0 0 14px">
+            <summary>记录观点（谁说的、说了什么、什么日期）</summary>
+            <div class="card">
+              <div class="grid2">
+                <div><label for="vpDate">日期</label><input id="vpDate" type="date"></div>
+                <div><label for="vpAuthorType">观点来源</label>
+                  <select id="vpAuthorType">
+                    <option value="self">我自己</option>
+                    <option value="colleague">同事</option>
+                    <option value="external">外部人士</option>
+                    <option value="institution">机构研报/会议</option>
+                  </select></div>
+                <div><label for="vpAuthorName">谁说的（外部/同事时填写）</label>
+                  <input id="vpAuthorName" placeholder="如：某券商策略会 / 研究部老王"></div>
+                <div><label>标签（点选，可多选）</label>
+                  <div id="vpTagPicker" class="chips" style="margin:0"></div></div>
+              </div>
+              <label for="vpContent">观点内容</label>
+              <textarea id="vpContent" style="min-height:64px" placeholder="如：红利风格拥挤度偏高，注意回撤控制"></textarea>
+              <button class="btn w100" id="vpCreate">保存观点</button>
+            </div>
+          </details>
+          <div id="vpList"></div>
+        </div>
+        <div class="pane side">
+          <div class="card">
+            <p class="section-title">标签管理（观点与客户共用）</p>
+            <div id="tagList"></div>
+            <details class="manage" style="margin-top:10px">
+              <summary>新增标签</summary>
+              <div class="card">
+                <label for="tagLabel">显示名（中文）</label>
+                <input id="tagLabel" placeholder="如：中特估">
+                <label for="tagKey">规范键（小写英文）</label>
+                <input id="tagKey" placeholder="如：china_value">
+                <label for="tagAliases">别名（逗号分隔，供口语解析）</label>
+                <input id="tagAliases" placeholder="如：央企价值，央国企">
+                <button class="btn secondary w100" id="tagCreate">添加标签</button>
+              </div>
+            </details>
+            <p class="muted" style="margin-top:8px">标签同时用于客户需求/持仓和自然语言解析（"标签：中特估"）；新建别名立即生效。</p>
           </div>
         </div>
       </div>
@@ -337,6 +397,7 @@
     if (name==="customers") loadCustomers();
     if (name==="tasks") loadTasksAll();
     if (name==="board") loadBoard();
+    if (name==="viewpoints") loadViewpoints();
     if (name==="alerts") loadAlerts();
   }
   document.querySelectorAll("nav button").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
@@ -358,7 +419,7 @@
       if (role==="admin") loadCandidates();
       $("loginOverlay").style.display="none";
       await refreshAll();
-      await Promise.all([loadPrefs(),loadSchedules()]);
+      await Promise.all([loadPrefs(),loadSchedules(),loadTags()]);
     } catch(e){$("loginError").textContent=e.message;}
   }
   $("login").addEventListener("click",login);
@@ -771,6 +832,130 @@
     document.querySelectorAll(".chips [data-filter]").forEach(x=>x.classList.remove("on"));
     c.classList.add("on");alertFilter=c.dataset.filter;renderAlerts();
   }));
+  /* ── 市场观点与标签（V2）── */
+  let myTags = [], vpSelectedTags = new Set();
+  const AUTHOR_LABELS = {self:"我自己", colleague:"同事", external:"外部人士", institution:"机构研报"};
+
+  async function loadTags() {
+    try {
+      myTags = await api("/api/v2/tags");
+      renderTagManager();
+      renderTagPicker();
+      renderTagFilter();
+    } catch(e){/* 未登录忽略 */}
+  }
+  function tagLabel(key){ const t=myTags.find(x=>x.key===key); return t?t.label:key; }
+  function renderTagManager() {
+    const box=$("tagList"); if(!box) return; box.replaceChildren();
+    myTags.forEach(t=>{
+      const r=el("div",undefined,"row-item");
+      const g=el("div",undefined,"grow");
+      g.append(el("strong",`${t.label}（${t.key}）`));
+      g.append(el("div",t.aliases&&t.aliases.length?("别名："+t.aliases.join("、")):"无别名","muted"));
+      r.append(g);
+      const del=el("button","删除","btn small ghost");
+      del.addEventListener("click",async()=>{
+        if(!confirm(`删除标签「${t.label}」？已有记录上的该标签保留为文本。`))return;
+        try{await api("/api/v2/tags/"+t.id,"DELETE");await loadTags();await loadViewpoints();}
+        catch(e){alert(e.message);}
+      });
+      r.append(del); box.append(r);
+    });
+  }
+  function renderTagPicker() {
+    const box=$("vpTagPicker"); if(!box) return; box.replaceChildren();
+    myTags.forEach(t=>{
+      const c=el("button",t.label,"chip"+(vpSelectedTags.has(t.key)?" on":""));
+      c.addEventListener("click",()=>{
+        if(vpSelectedTags.has(t.key))vpSelectedTags.delete(t.key);else vpSelectedTags.add(t.key);
+        renderTagPicker();
+      });
+      box.append(c);
+    });
+  }
+  function renderTagFilter() {
+    const sel=$("vpTagFilter"); if(!sel) return;
+    const keep=sel.value;
+    const all=el("option","全部标签"); all.value=""; sel.replaceChildren(all);
+    myTags.forEach(t=>{const o=el("option",t.label);o.value=t.key;sel.append(o);});
+    if([...sel.options].some(o=>o.value===keep))sel.value=keep;
+  }
+  $("tagCreate").addEventListener("click",async()=>{
+    try{
+      await api("/api/v2/tags","POST",{label:$("tagLabel").value.trim(),
+        key:$("tagKey").value.trim(),aliases:$("tagAliases").value.split(/[,，]/).map(x=>x.trim()).filter(Boolean)});
+      $("tagLabel").value="";$("tagKey").value="";$("tagAliases").value="";
+      bubble("标签已添加","新标签立即可用于观点、客户与自然语言解析");
+      await loadTags();
+    }catch(e){alert(e.message);}
+  });
+
+  async function loadViewpoints() {
+    const box=$("vpList"); box.replaceChildren(el("div","empty","加载中…"));
+    try{
+      const params=new URLSearchParams();
+      if($("vpTagFilter").value)params.set("tag",$("vpTagFilter").value);
+      if($("vpDateFrom").value)params.set("date_from",$("vpDateFrom").value);
+      if($("vpDateTo").value)params.set("date_to",$("vpDateTo").value);
+      const list=await api("/api/v2/viewpoints"+(params.toString()?"?"+params:""));
+      box.replaceChildren();
+      if(!list.length){box.append(el("div","empty","暂无观点，点上方『记录观点』新增"));return;}
+      for(const v of list){
+        const card=el("div",undefined,"sub-card");
+        const head=el("div",undefined,"row-item");
+        const g=el("div",undefined,"grow");
+        g.append(el("strong",`${v.viewpoint_date} · ${v.author_type==="self"?"我":v.author_name}（${AUTHOR_LABELS[v.author_type]||v.author_type}）`));
+        const tags=el("div");
+        (v.tags||[]).forEach(t=>tags.append(el("span",tagLabel(t),"tag-pill")));
+        g.append(tags);
+        if(v.source_note)g.append(el("div","来源："+v.source_note,"muted"));
+        head.append(g);
+        const matchBtn=el("button","关联客户","btn small secondary");
+        const matchBox=el("div");
+        matchBtn.addEventListener("click",async()=>{
+          if(matchBox.childNodes.length){matchBox.replaceChildren();return;}
+          try{
+            const m=await api(`/api/v2/viewpoints/${v.id}/matched-customers`);
+            matchBox.replaceChildren();
+            if(!m.customers.length){matchBox.append(el("div","empty","没有标签交集的客户"));}
+            m.customers.forEach(c=>{
+              const r=el("div",undefined,"row-item");
+              r.append(el("strong",c.name));
+              r.append(el("div",c.reasons.join("；"),"muted"));
+              matchBox.append(r);
+            });
+          }catch(e){alert(e.message);}
+        });
+        head.append(matchBtn);
+        card.append(head);
+        card.append(el("div",clean(v.content_md)));
+        card.append(matchBox);
+        box.append(card);
+      }
+    }catch(e){box.replaceChildren(el("div","empty","加载失败："+e.message));}
+  }
+  $("vpSearch").addEventListener("click",()=>loadViewpoints());
+  $("vpDate").value=todayISO();
+  $("vpAuthorType").addEventListener("change",()=>{
+    const self=$("vpAuthorType").value==="self";
+    $("vpAuthorName").disabled=self;
+    if(self)$("vpAuthorName").value="";
+  });
+  $("vpCreate").addEventListener("click",async()=>{
+    if($("vpContent").value.trim().length<2){alert("请填写观点内容");return;}
+    try{
+      await api("/api/v2/viewpoints","POST",{
+        viewpoint_date:$("vpDate").value||todayISO(),
+        author_type:$("vpAuthorType").value,
+        author_name:$("vpAuthorType").value==="self"?"本人":($("vpAuthorName").value.trim()||"未署名"),
+        content_md:$("vpContent").value.trim(),
+        tags:[...vpSelectedTags]});
+      $("vpContent").value="";vpSelectedTags.clear();renderTagPicker();
+      bubble("观点已记录","可点『关联客户』查看标签交集客户");
+      await loadViewpoints();
+    }catch(e){alert(e.message);}
+  });
+
   /* ── 工作看板（V2 PR5：确定性周报与趋势）── */
   const STAT_DEFS = [
     ["visits","本周拜访",false],["needs_created","本周新增需求",false],

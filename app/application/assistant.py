@@ -37,7 +37,7 @@ def list_due(db: Session, actor: Actor, until: date | None = None) -> list[dict]
     ]
 
 
-def _drafts_from_provider(message: str, customers, contacts):
+def _drafts_from_provider(message: str, customers, contacts, tag_map=None):
     customer_by_id = {c.id: c for c in customers}
     names = [c.name for c in customers]
     pairs = [(c.name, customer_by_id[c.customer_id].name)
@@ -49,7 +49,7 @@ def _drafts_from_provider(message: str, customers, contacts):
             return result.drafts, warnings, "llm_extraction"
         except Exception:  # model/network/schema failures do not cause silent writes
             warnings.append("模型解析失败，已切换为有限规则解析，请特别核对预览")
-    result = RuleIntentExtractor().extract(message, names, pairs)
+    result = RuleIntentExtractor().extract(message, names, pairs, tag_map=tag_map)
     warnings.extend(result.warnings)
     return result.drafts, warnings, "offline_rules"
 
@@ -61,7 +61,9 @@ def interpret(db: Session, actor: Actor, message: str) -> dict:
         return {"status": "answered", "intent": "query_due", "until": until.isoformat(),
                 "items": list_due(db, actor, until)}
     customers, contacts = get_visible_targets(db, actor)
-    drafts, warnings, source = _drafts_from_provider(message, customers, contacts)
+    from app.application.tags import alias_map
+    drafts, warnings, source = _drafts_from_provider(
+        message, customers, contacts, tag_map=alias_map(db, actor))
     if not drafts:
         return {
             "status": "needs_clarification", "warnings": warnings,

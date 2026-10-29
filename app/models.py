@@ -443,3 +443,38 @@ class MarketSignalCandidate(Base):
     signal_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TagDef(Base):
+    """用户自管理的主题标签字典：观点与客户（需求/持仓）共用同一套标签。"""
+    __tablename__ = "tag_defs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "key"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id"], ["users.tenant_id", "users.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    key: Mapped[str] = mapped_column(String(40), nullable=False)        # 规范键：dividend
+    label: Mapped[str] = mapped_column(String(60), nullable=False)      # 显示名：红利
+    aliases: Mapped[list] = mapped_column(JSON, default=list, nullable=False)  # 别名：高股息
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MarketViewpoint(Base):
+    """指定日期的市场观点：谁说的、什么内容、挂哪些标签；仅为观点留痕，不构成事件。"""
+    __tablename__ = "market_viewpoints"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "owner_user_id", "id"),
+        ForeignKeyConstraint(["tenant_id", "owner_user_id"], ["users.tenant_id", "users.id"]),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    owner_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    viewpoint_date: Mapped[date] = mapped_column(Date, nullable=False)
+    author_type: Mapped[str] = mapped_column(String(20), default="self", nullable=False)
+    author_name: Mapped[str] = mapped_column(String(80), default="本人", nullable=False)
+    content_md: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    source_note: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

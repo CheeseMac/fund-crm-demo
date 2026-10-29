@@ -109,3 +109,28 @@ class ObservationIn(BaseModel):
     change_pct: float = Field(ge=-100, le=100)
     note: str = Field(default="", max_length=500)
     quality: str = "validated"
+
+class ViewpointIn(BaseModel):
+    viewpoint_date: date
+    author_type: str = Field(pattern="^(self|colleague|external|institution)$")
+    author_name: str = Field(default="本人", max_length=80)
+    content_md: str = Field(min_length=2, max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    source_note: str = Field(default="", max_length=200)
+
+class ViewpointPatch(BaseModel):
+    viewpoint_date: date | None = None
+    author_type: str | None = Field(default=None, pattern="^(self|colleague|external|institution)$")
+    author_name: str | None = Field(default=None, max_length=80)
+    content_md: str | None = Field(default=None, min_length=2, max_length=5000)
+    tags: list[str] | None = Field(default=None, max_length=10)
+    source_note: str | None = Field(default=None, max_length=200)
+
+class TagIn(BaseModel):
+    key: str = Field(min_length=2, max_length=40)
+    label: str = Field(min_length=1, max_length=60)
+    aliases: list[str] = Field(default_factory=list, max_length=10)
+
+class TagPatch(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=60)
+    aliases: list[str] | None = Field(default=None, max_length=10)

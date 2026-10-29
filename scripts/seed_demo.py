@@ -25,6 +25,8 @@ from app.dependencies import Actor
 from app.services.market import reconcile_market_signal, reconcile_due_tasks
 from app.workers.scheduling import ensure_default_schedule
 from app.application.notifications import get_or_create_prefs
+from app.application.tags import ensure_defaults as ensure_tags
+from app.models import MarketViewpoint
 
 
 def _load_env(path=".env"):
@@ -283,6 +285,31 @@ def main():
                  "量化对冲产品尽调需求（李强客户）", ["quant"])
 
         db.commit()
+
+        # ── 市场观点（虚构演示：谁说的/日期/标签，与客户共用标签体系）──
+        ensure_tags(db, Actor(user_id=owner, tenant_id=tid, role="sales"))
+        viewpoints = [
+            MarketViewpoint(
+                tenant_id=tid, owner_user_id=owner,
+                viewpoint_date=TODAY - timedelta(days=2), author_type="self",
+                author_name="本人", tags=["dividend"],
+                content_md="红利风格拥挤度偏高，若客户问起，重点沟通回撤控制而不是收益弹性。",
+                source_note="自己的盘面观察"),
+            MarketViewpoint(
+                tenant_id=tid, owner_user_id=owner,
+                viewpoint_date=TODAY - timedelta(days=5), author_type="colleague",
+                author_name="研究部老王", tags=["bond"],
+                content_md="利率进一步下行空间有限，建议持有债基的客户关注久期风险。",
+                source_note="晨会交流"),
+            MarketViewpoint(
+                tenant_id=tid, owner_user_id=owner,
+                viewpoint_date=TODAY - timedelta(days=8), author_type="institution",
+                author_name="某券商年度策略会", tags=["tech", "growth"],
+                content_md="AI 产业景气度上修，科技成长主线获多家机构上调评级（会议纪要摘录）。",
+                source_note="外部会议纪要"),
+        ]
+        db.add_all(viewpoints)
+        db.flush()
 
         # ── 市场事件（管理员发布，虚构数据）→ 触发标签匹配提醒 ──
         signals = [

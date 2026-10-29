@@ -14,10 +14,11 @@ class RuleIntentExtractor:
 
     def extract(self, message: str, customer_names: Sequence[str],
                 contact_pairs: Sequence[tuple[str, str]],
-                today: date | None = None) -> ExtractionResult:
+                today: date | None = None,
+                tag_map: dict[str, str] | None = None) -> ExtractionResult:
         customer_name, contact_name = choose_target(
             message, list(customer_names), list(contact_pairs))
         drafts, warnings = text_rules.build_drafts(
-            message, customer_name, contact_name, today)
+            message, customer_name, contact_name, today, tag_map=tag_map)
         return ExtractionResult(drafts=drafts, warnings=warnings,
                                 model_id=self.model_id)

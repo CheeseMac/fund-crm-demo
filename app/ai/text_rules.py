@@ -24,12 +24,15 @@ def local_today() -> date:
     return __import__("datetime").datetime.now(ZoneInfo(settings.app_timezone)).date()
 
 
-def extract_tags(text: str, explicit_only: bool = False) -> list[str]:
+def extract_tags(text: str, explicit_only: bool = False,
+                 tag_map: dict[str, str] | None = None) -> list[str]:
+    """从文本提取主题标签；tag_map 允许传入用户自管理的标签字典（别名可自定义）。"""
     # For holding exposure do NOT infer tags from the product name. A manual tag is needed.
     if explicit_only:
         tag_match = re.search(r"(?:标签|风格)[:：]\s*([^，。；;\n]{1,100})", text)
         text = tag_match.group(1) if tag_match else ""
-    tags = [tag for word, tag in TAG_ALIASES.items() if word in text]
+    mapping = tag_map if tag_map is not None else TAG_ALIASES
+    tags = [tag for word, tag in mapping.items() if word in text]
     return list(dict.fromkeys(tags))
 
 
@@ -114,7 +117,9 @@ def extract_product(text: str) -> str | None:
 
 
 def build_drafts(message: str, customer_name: str, contact_name: str | None,
-                 today: date | None = None) -> tuple[list[ActionDraft], list[str]]:
+                 today: date | None = None,
+                 tag_map: dict[str, str] | None = None
+                 ) -> tuple[list[ActionDraft], list[str]]:
     """目标客户/联系人已由上层确定；这里只做文本 -> 候选操作。"""
     today = today or local_today()
     drafts: list[ActionDraft] = []
@@ -131,7 +136,7 @@ def build_drafts(message: str, customer_name: str, contact_name: str | None,
     if need_text:
         drafts.append(ActionDraft(
             kind="record_need", customer_name=customer_name, contact_name=contact_name,
-            description=need_text, tags=extract_tags(need_text),
+            description=need_text, tags=extract_tags(need_text, tag_map=tag_map),
         ))
     product_name = extract_product(message)
     uncertain_purchase = bool(re.search(
@@ -144,7 +149,7 @@ def build_drafts(message: str, customer_name: str, contact_name: str | None,
         drafts.append(ActionDraft(
             kind="record_holding", customer_name=customer_name, contact_name=contact_name,
             product_name=product_name, amount_cny=extract_amount(message),
-            tags=extract_tags(message, explicit_only=True),
+            tags=extract_tags(message, explicit_only=True, tag_map=tag_map),
         ))
     if re.search(r"提醒|下次|回访|跟进|再联系|再拜访", message):
         due = parse_date(message, today)

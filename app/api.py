@@ -19,6 +19,7 @@ from app.schemas import (
     TenantRegistration, LoginIn, UserIn, CustomerIn, ContactIn,
     InterpretIn, MarketSignalIn, TaskIn, HoldingIn, PrefsIn,
     MediaInitiateIn, MeetingIn, ObservationIn,
+    ViewpointIn, ViewpointPatch, TagIn, TagPatch,
 )
 from app.security import hash_password, verify_password, create_token
 from app.application import assistant as assistant_app
@@ -604,3 +605,65 @@ def market_reject(candidate_id: str, actor: Actor = Depends(require_admin),
                   db: Session = Depends(get_db)):
     from app.application import market_observation as obs_app
     return obs_app.decide_candidate(db, actor, candidate_id, accept=False)
+
+# ── V2：市场观点与用户标签字典（观点/客户共用标签，用户自管理）──
+
+@router.get("/api/v2/viewpoints")
+def viewpoints_list(tag: str | None = None,
+                     date_from: __import__("datetime").date | None = None,
+                     date_to: __import__("datetime").date | None = None,
+                     actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    from app.application import viewpoints as vp_app
+    return vp_app.list_viewpoints(db, actor, tag, date_from, date_to)
+
+@router.post("/api/v2/viewpoints", status_code=201)
+def viewpoints_create(payload: ViewpointIn, actor: Actor = Depends(get_actor),
+                      db: Session = Depends(get_db)):
+    from app.application import viewpoints as vp_app
+    v = vp_app.create_viewpoint(db, actor, payload.viewpoint_date, payload.author_type,
+                                payload.author_name, payload.content_md,
+                                payload.tags, payload.source_note)
+    return {"id": v.id, "viewpoint_date": v.viewpoint_date.isoformat()}
+
+@router.patch("/api/v2/viewpoints/{viewpoint_id}")
+def viewpoints_update(viewpoint_id: str, payload: ViewpointPatch,
+                      actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    from app.application import viewpoints as vp_app
+    return vp_app.update_viewpoint(db, actor, viewpoint_id, payload.viewpoint_date,
+                                   payload.author_type, payload.author_name,
+                                   payload.content_md, payload.tags, payload.source_note)
+
+@router.delete("/api/v2/viewpoints/{viewpoint_id}")
+def viewpoints_delete(viewpoint_id: str, actor: Actor = Depends(get_actor),
+                      db: Session = Depends(get_db)):
+    from app.application import viewpoints as vp_app
+    return vp_app.delete_viewpoint(db, actor, viewpoint_id)
+
+@router.get("/api/v2/viewpoints/{viewpoint_id}/matched-customers")
+def viewpoints_matched(viewpoint_id: str, actor: Actor = Depends(get_actor),
+                       db: Session = Depends(get_db)):
+    from app.application import viewpoints as vp_app
+    return vp_app.matched_customers(db, actor, viewpoint_id)
+
+@router.get("/api/v2/tags")
+def tags_list(actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    from app.application import tags as tags_app
+    return tags_app.list_tags(db, actor)
+
+@router.post("/api/v2/tags", status_code=201)
+def tags_create(payload: TagIn, actor: Actor = Depends(get_actor),
+                db: Session = Depends(get_db)):
+    from app.application import tags as tags_app
+    return tags_app.create_tag(db, actor, payload.key, payload.label, payload.aliases)
+
+@router.patch("/api/v2/tags/{tag_id}")
+def tags_update(tag_id: str, payload: TagPatch,
+                actor: Actor = Depends(get_actor), db: Session = Depends(get_db)):
+    from app.application import tags as tags_app
+    return tags_app.update_tag(db, actor, tag_id, payload.label, payload.aliases)
+
+@router.delete("/api/v2/tags/{tag_id}")
+def tags_delete(tag_id: str, actor: Actor = Depends(get_actor),
+                db: Session = Depends(get_db)):
+    from app.application import tags as tags_app
+    return tags_app.delete_tag(db, actor, tag_id)
